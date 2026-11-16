@@ -1,0 +1,3 @@
+# the evaluation writes LF; keep LF on checkout so a fresh clone reproduces the reports byte for byte
+instakill-starter/reports/*.csv text eol=lf
+instakill-starter/reports/*.md text eol=lf
