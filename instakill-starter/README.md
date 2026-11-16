@@ -181,6 +181,27 @@ is the Week 7 evaluation. The `for_you` and `chronological` strategies are uncha
 number of candidates. The likes are aggregated once per request over the `like` table (O(L)). That aggregation is
 the first thing to precompute, as a `like_count` / rolling-window counter per post.
 
+## Offline evaluation (Week 7)
+
+```bash
+pip install -e ".[dev,eval]"
+python scripts/seed_movielens.py --data path/to/ml-latest-small   # MovieLens is not in the repo
+python scripts/evaluate.py                                        # [--db instakill.db] [--cutoff 2016-02-09] [--seed 42] [--out reports/]
+```
+
+This is a time-split replay of the four strategies (`chronological`, `popularity`, `for_you`, `learned`) on our own
+database. It asks the same `get_feed` service function as `GET /feed`, on a snapshot of the database taken before the
+cut-off. The protocol and its limitations are in [`docs/evaluation-protocol.md`](docs/evaluation-protocol.md).
+
+It writes three reports:
+- [`reports/baseline_table.md`](reports/baseline_table.md): mean NDCG@10 with 95 % bootstrap intervals, `learned` minus
+  the best baseline per slice, and the run metadata;
+- `reports/eval_results.csv`: one row per user and strategy;
+- `reports/dashboard.html`: static and self-contained; open it by double click. It is never served by the API.
+
+The first two are byte-identical on every run with the same database and arguments. `seed_db.py` (the small synthetic
+seed) is still used by the API tests, and `seed_movielens.py` replaces the content of the target database.
+
 ## Milestones (see masterplan.md for full details)
 
 W1 Repo+API → W3 CRUD+DB → W4 Feed v0 → W7 Baseline+eval plan → W9 ML+pretrained feature → W11 Profile+optimize → W13 Feature freeze+E2E → W14 Red-team+Demo Day.
