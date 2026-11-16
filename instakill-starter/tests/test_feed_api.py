@@ -75,3 +75,24 @@ def test_feed_errors(client, params, status, code):
     response = client.get("/feed", params=params)
     assert response.status_code == status
     assert response.json()["error"]["code"] == code
+
+
+def test_learned_feed_over_seeded_db(client):
+    body = client.get("/feed", params={"user_id": ALICE, "strategy": "learned", "limit": 5}).json()
+    assert body["strategy"] == "learned"
+    posts = body["posts"]
+    assert len(posts) == 5
+    assert all(0.0 < p["score"] < 1.0 for p in posts)  # P(like)
+    keys = [(-p["score"], p["post_id"]) for p in posts]
+    assert keys == sorted(keys)
+    assert not {p["post_id"] for p in posts} & set(LIKES[ALICE])
+
+
+def test_learned_feed_without_model_is_503(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.db.database.DB_PATH", tmp_path / "seeded.db")
+    monkeypatch.setattr("app.main.DEFAULT_MODEL_PATH", tmp_path / "missing.npz")
+    seed()
+    with TestClient(create_app(encoder=BagOfWordsEncoder())) as c:
+        response = c.get("/feed", params={"user_id": ALICE, "strategy": "learned"})
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "model_unavailable"

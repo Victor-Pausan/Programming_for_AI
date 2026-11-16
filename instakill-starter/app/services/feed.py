@@ -4,12 +4,14 @@ No HTTP and no SQL here. ``now`` is passed in by the caller, so the service is
 deterministic in tests.
 """
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from app.db.repository import FeedReader
 from app.domain.models import Post
+from app.feed.learned import LearnedSignals, rank_learned
 from app.feed.ranking import FeedSignals, FeedWeights, chronological, rank_feed
+from app.ml.like_model import LikeModel
 
 MIN_LIMIT = 1
 MAX_LIMIT = 50
@@ -19,6 +21,7 @@ DEFAULT_LIMIT = 20
 class FeedStrategy(StrEnum):
     FOR_YOU = "for_you"
     CHRONOLOGICAL = "chronological"
+    LEARNED = "learned"
 
 
 class FeedError(Exception):
@@ -27,6 +30,10 @@ class FeedError(Exception):
 
 class InvalidFeedRequestError(FeedError, ValueError):
     pass
+
+
+class ModelUnavailableError(FeedError):
+    """strategy=learned was requested but no like model is loaded."""
 
 
 class UserNotFoundError(FeedError):
@@ -38,7 +45,7 @@ class UserNotFoundError(FeedError):
 @dataclass(frozen=True, slots=True)
 class FeedItem:
     post: Post
-    score: float | None  # None for the chronological strategy
+    score: float | None  # None for chronological; P(like) for learned
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +62,7 @@ def get_feed(
     limit: int = DEFAULT_LIMIT,
     strategy: FeedStrategy = FeedStrategy.FOR_YOU,
     weights: FeedWeights = FeedWeights(),
+    like_model: LikeModel | None = None,
 ) -> FeedPage:
     """Build the feed of ``user_id``.
 
@@ -65,6 +73,7 @@ def get_feed(
     Raises:
         InvalidFeedRequestError: limit outside [MIN_LIMIT, MAX_LIMIT] or unknown strategy.
         UserNotFoundError: no such user.
+        ModelUnavailableError: strategy is learned but ``like_model`` is None.
     """
     if not MIN_LIMIT <= limit <= MAX_LIMIT:
         raise InvalidFeedRequestError(f"limit must be between {MIN_LIMIT} and {MAX_LIMIT}")
@@ -72,6 +81,8 @@ def get_feed(
         strategy = FeedStrategy(strategy)
     except ValueError as exc:
         raise InvalidFeedRequestError(f"unknown strategy {strategy!r}") from exc
+    if strategy is FeedStrategy.LEARNED and like_model is None:
+        raise ModelUnavailableError("the learned strategy needs models/like_model.npz")
     if repository.get_user(user_id) is None:
         raise UserNotFoundError(user_id)
 
@@ -79,6 +90,16 @@ def get_feed(
 
     if strategy is FeedStrategy.CHRONOLOGICAL:
         items = [FeedItem(post=p, score=None) for p in chronological(candidates, limit)]
+    elif strategy is FeedStrategy.LEARNED:
+        lifetime, recent = repository.like_stats(since=now - timedelta(days=like_model.popularity_days))
+        learned_signals = LearnedSignals(
+            user_like_count=repository.user_like_count(user_id),
+            liked_author_counts=repository.liked_author_counts(user_id),
+            lifetime_likes=lifetime,
+            recent_likes=recent,
+        )
+        items = [FeedItem(post=r.post, score=r.score)
+                 for r in rank_learned(candidates, learned_signals, now, like_model, limit)]
     else:
         signals = FeedSignals(
             followed_authors=frozenset(repository.followed_authors(user_id)),

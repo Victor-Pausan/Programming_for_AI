@@ -63,8 +63,31 @@ class FeedReader(Protocol):
 
     def like_counts(self, post_ids: list[int]) -> dict[int, int]: ...
 
+    def user_like_count(self, user_id: int) -> int: ...
+
+    def like_stats(self, since: datetime) -> tuple[dict[int, int], dict[int, int]]:
+        """(lifetime likes per post, likes at or after ``since`` per post), over ALL posts."""
+        ...
+
+
+def _sqlite_ts(value: datetime) -> str:
+    """Format like SQLite's datetime('now'): naive UTC 'YYYY-MM-DD HH:MM:SS'."""
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
 
 class SqliteFeedRepository(_SqliteReader):
+    def user_like_count(self, user_id: int) -> int:
+        return self._all('SELECT COUNT(*) AS n FROM "like" WHERE user_id = ?', (user_id,))[0]["n"]
+
+    def like_stats(self, since: datetime) -> tuple[dict[int, int], dict[int, int]]:
+        rows = self._all(
+            'SELECT post_id, COUNT(*) AS total, SUM(created_at >= ?) AS recent '
+            'FROM "like" GROUP BY post_id',
+            (_sqlite_ts(since),),
+        )
+        return ({r["post_id"]: r["total"] for r in rows},
+                {r["post_id"]: r["recent"] for r in rows if r["recent"]})
+
     def get_user(self, user_id: int) -> User | None:
         rows = self._all("SELECT id, username, created_at FROM user WHERE id = ?", (user_id,))
         if not rows:

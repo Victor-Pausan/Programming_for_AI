@@ -4,7 +4,7 @@
 |-----------------|-----------------|--------|
 | `GET /health`   | implemented     | Week 1 |
 | `GET /search`   | implemented     | Week 3 |
-| `GET /feed`     | **implemented** | Week 4 |
+| `GET /feed`     | **implemented** | Week 4 (`strategy=learned`: Week 5) |
 | `POST /posts`   | planned only    | Week 2 |
 
 All errors share one JSON shape (implemented in `app/api/errors.py`):
@@ -28,7 +28,7 @@ GET /feed?user_id=1&limit=20&strategy=for_you
 |------------|---------|----------|-----------------------------------------------------------|
 | `user_id`  | integer | yes      | Must be an existing user (otherwise `404`).               |
 | `limit`    | integer | no       | 1–50 inclusive; default `20`.                             |
-| `strategy` | string  | no       | `for_you` (default) or `chronological`.                   |
+| `strategy` | string  | no       | `for_you` (default), `chronological`, or `learned`.       |
 
 **Candidates** (both strategies): every post except the user's own posts and the posts the user already
 liked. A user who follows nobody still gets a feed, ranked by freshness and popularity. See the README
@@ -53,12 +53,15 @@ for the formula.
 
 `chronological` has the same shape, but there is **no** `score` field.
 
+`learned` has the same shape as `for_you`. There, `score` is the like model's predicted probability **P(like)**,
+in (0, 1) and rounded to 6 decimals. It comes from `models/like_model.npz`, trained in Lab 05.
+
 - `posts` holds at most `limit` items, and fewer if there are fewer candidates. It is `[]` when nothing qualifies.
 - `user_id` inside a post is the **author**. The top-level `user_id` is the requesting user.
 - `created_at` is ISO 8601 in UTC.
 - `score` (only for `for_you`) is `1.0·freshness + 1.5·affinity + 1.0·popularity`. It is in [0, 3.5] and
   rounded to 6 decimals.
-- Ordering: `for_you` by `score` descending; `chronological` by `created_at` descending (newest first).
+- Ordering: `for_you` and `learned` by `score` descending; `chronological` by `created_at` descending (newest first).
   In both, equal values are ordered by ascending `post_id`.
 
 ### Errors
@@ -66,7 +69,8 @@ for the formula.
 | Status | `code`             | When                                                                            |
 |--------|--------------------|---------------------------------------------------------------------------------|
 | 404    | `user_not_found`   | No user has id `user_id`.                                                       |
-| 422    | `validation_error` | `user_id` is missing or not an integer; `limit` is not an integer or is outside 1–50; `strategy` is not `for_you`/`chronological`. |
+| 422    | `validation_error` | `user_id` is missing or not an integer; `limit` is not an integer or is outside 1–50; `strategy` is not `for_you`/`chronological`/`learned`. |
+| 503    | `model_unavailable`| `strategy=learned`, but `models/like_model.npz` was not found at startup.    |
 | 500    | `internal_error`   | Unexpected failure. This status is not yet mapped by a dedicated handler.       |
 
 ### Examples
@@ -76,6 +80,7 @@ for the formula.
 | `/feed?user_id=1`                           | `200`, up to 20 posts with `score` |
 | `/feed?user_id=1&strategy=chronological`    | `200`, newest first, no `score`    |
 | `/feed?user_id=8&limit=5`                   | `200`, cold-start feed  |
+| `/feed?user_id=1&strategy=learned`          | `200`, `score` = P(like) |
 | `/feed?user_id=999`                         | `404 user_not_found`    |
 | `/feed`                                     | `422 validation_error`  |
 | `/feed?user_id=1&limit=51`                  | `422 validation_error`  |

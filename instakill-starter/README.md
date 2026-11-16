@@ -139,6 +139,48 @@ table on every request. A `like_count` column, or a counter updated when a like 
 popularity an O(1) lookup. The next step is limiting *C* itself, e.g. only posts from the last N days,
 or a cached candidate set per user.
 
+## Learned feed (`GET /feed?strategy=learned`, Week 5)
+
+```bash
+curl "localhost:8000/feed?user_id=1&strategy=learned&limit=5"
+```
+
+`models/like_model.npz` (4 KB, 129 parameters) is the one-hidden-layer MLP trained in plain NumPy in
+`lab-05-learn-the-scorer/week05.ipynb`. On the MovieLens exam it beat every baseline, including the linear model
+(test NDCG@10 0.477 vs 0.427). It predicts **P(like)** for a user and a post from six signals. The feed returns
+the top `limit` candidates by that probability, with ties broken by ascending `post_id`.
+
+| Piece | Module |
+|---|---|
+| Model file + loader + pure `predict` (copied from the notebook) | `models/like_model.npz`, `app/ml/like_model.py` |
+| The six signals and `rank_learned` (pure: `now` passed in, no I/O, heap top-k) | `app/feed/learned.py` |
+| Extra reads: likes per user, lifetime + recent likes per post | `SqliteFeedRepository.user_like_count / like_stats` |
+| Strategy dispatch; `503 model_unavailable` if the file is missing | `app/services/feed.py`, `app/api/feed.py` |
+
+The model is loaded **once at startup**, in the `lifespan` of `create_app()`, from `models/like_model.npz`.
+
+**Signal formulas.** These are the notebook's formulas, and the constants come from the `.npz`, not from our code:
+
+| Signal | InstaKill formula |
+|---|---|
+| freshness | `0.5 ** (age_days / half_life_days)` |
+| affinity | `likes by the user on this post's author / all likes by the user` (the author plays the role of the single "genre") |
+| popularity | `likes in the last popularity_days / max over all posts` |
+| activity | `min(1, log1p(likes by the user) / log1p(activity_cap))` |
+| lifetime | `log1p(likes ever) / log1p(max over all posts)` |
+| age | `min(1, age_days / age_cap_days)` |
+
+**Train/serve skew (known limitation).** The model was trained on movies, with a 3-year half-life and a 25-year age
+cap. InstaKill posts are hours old, so freshness is about 1.0 and age about 0.0 for **every** post: these two signals
+do not separate posts here. The ranking is effectively driven by affinity, popularity, lifetime and activity. Also,
+"author" is only a stand-in for "genre". The golden-row test (`tests/test_feed_learned.py`) proves that the
+*arithmetic* matches the notebook. Whether the *ranking* is good on InstaKill data still has to be measured, and that
+is the Week 7 evaluation. The `for_you` and `chronological` strategies are unchanged.
+
+**Cost of one request:** signals O(C) + forward pass O(C·6·H) with H = 16, + heap O(C log k), so linear in the
+number of candidates. The likes are aggregated once per request over the `like` table (O(L)). That aggregation is
+the first thing to precompute, as a `like_count` / rolling-window counter per post.
+
 ## Milestones (see masterplan.md for full details)
 
 W1 Repo+API → W3 CRUD+DB → W4 Feed v0 → W7 Baseline+eval plan → W9 ML+pretrained feature → W11 Profile+optimize → W13 Feature freeze+E2E → W14 Red-team+Demo Day.

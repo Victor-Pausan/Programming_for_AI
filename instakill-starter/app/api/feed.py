@@ -12,6 +12,7 @@ from app.services.feed import (
     MIN_LIMIT,
     FeedStrategy,
     InvalidFeedRequestError,
+    ModelUnavailableError,
     UserNotFoundError,
     get_feed,
 )
@@ -43,9 +44,12 @@ def feed(
     repository = getattr(request.app.state, "feed_repository", None) or SqliteFeedRepository()
     try:
         page = get_feed(user_id, repository, now=request.app.state.clock(),
-                        limit=limit, strategy=strategy)
+                        limit=limit, strategy=strategy,
+                        like_model=getattr(request.app.state, "like_model", None))
     except UserNotFoundError as exc:
         raise HTTPException(404, detail={"code": "user_not_found", "message": str(exc)}) from exc
+    except ModelUnavailableError as exc:
+        raise HTTPException(503, detail={"code": "model_unavailable", "message": str(exc)}) from exc
     except InvalidFeedRequestError as exc:
         raise HTTPException(422, detail={"code": "invalid_feed_request", "message": str(exc)}) from exc
     return FeedResponse(
