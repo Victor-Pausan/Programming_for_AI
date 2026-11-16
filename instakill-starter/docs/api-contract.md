@@ -1,14 +1,91 @@
-# API contract — `POST /posts` (planned, not implemented)
+# InstaKill API contract
+
+| Endpoint        | Status          | Since  |
+|-----------------|-----------------|--------|
+| `GET /health`   | implemented     | Week 1 |
+| `GET /search`   | **implemented** | Week 3 |
+| `POST /posts`   | planned only    | Week 2 |
+
+All errors share one JSON shape (implemented in `app/api/errors.py`):
+
+```json
+{ "error": { "code": "validation_error", "message": "limit: Input should be less than or equal to 20" } }
+```
+
+## `GET /search` (implemented)
+
+Semantic search over all posts that were in the database when the app started.
+
+Layers: `app/api/search.py` (HTTP parsing/formatting) → `app/services/search.py` (use case) →
+`app/search/retrieval.py` (pure NumPy cosine + top-k), with `app/search/encoder.py` (model adapter)
+and `app/db/repository.py` (SQLite reads) behind small protocols.
+
+### Request
+
+```http
+GET /search?q=vector%20search&limit=2
+```
+
+| Parameter | Type    | Required | Rules                                                                    |
+|-----------|---------|----------|--------------------------------------------------------------------------|
+| `q`       | string  | yes      | 1–500 characters; it must contain at least one non-whitespace character. |
+| `limit`   | integer | no       | 1–20 inclusive; default `10`.                                            |
+
+### Successful response — `200 OK`
+
+The posts below come from the seed data. The scores are only illustrative.
+
+```json
+{
+  "query": "vector search",
+  "results": [
+    { "post_id": 3, "user_id": 2, "content": "just shipped a cosine similarity search, feels great", "score": 0.512345 },
+    { "post_id": 5, "user_id": 4, "content": "benchmarking my ranker against popularity baseline today", "score": 0.181734 }
+  ]
+}
+```
+
+- `query` is echoed exactly as received.
+- `results` holds at most `limit` items. It holds fewer if there are fewer posts, and it is `[]`
+  when the database had no posts at startup.
+- `score` is the cosine similarity between the query embedding and the post embedding. It is in
+  [-1, 1] and rounded to 6 decimals. Higher means more similar. Results are not filtered by any
+  minimum score.
+- Ordering: `score` descending. Equal scores are ordered by ascending `post_id`, so the output is
+  deterministic.
+- Posts created after startup are not searchable until the index is rebuilt. See the README.
+
+### Errors
+
+| Status | `code`             | When                                                                  |
+|--------|--------------------|-----------------------------------------------------------------------|
+| 422    | `validation_error` | `q` is missing or empty, or longer than 500 characters; `limit` is not an integer or is outside 1–20. |
+| 422    | `invalid_query`    | `q` contains only whitespace.                                         |
+| 500    | `internal_error`   | Unexpected failure. This status is not yet mapped by a dedicated handler. |
+
+### Examples
+
+| Request                          | Response                 |
+|----------------------------------|--------------------------|
+| `/search?q=cheap%20dinner`       | `200`, up to 10 results  |
+| `/search?q=jazz&limit=3`         | `200`, up to 3 results   |
+| `/search`                        | `422 validation_error`   |
+| `/search?q=`                     | `422 validation_error`   |
+| `/search?q=%20%20`               | `422 invalid_query`      |
+| `/search?q=jazz&limit=0`         | `422 validation_error`   |
+| `/search?q=jazz&limit=21`        | `422 validation_error`   |
+
+## `POST /posts` (planned, not implemented)
 
 Status: **written contract only**. No route exists yet. When it is built, it will be a thin
 HTTP adapter around `app.services.posts.publish_post`. It will map the JSON body to a
 `PublishPostRequest` and the service's exceptions to the status codes listed below.
 
-## Purpose
+### Purpose
 
 Publish a new text post on behalf of an existing user.
 
-## Request
+### Request
 
 ```http
 POST /posts
@@ -32,7 +109,7 @@ Unknown extra fields are rejected.
 > Authentication is out of scope for now: `author_id` is sent in the body. Once auth exists,
 > the author will come from the authenticated user and this field will be removed.
 
-## Successful response — `201 Created`
+### Successful response — `201 Created`
 
 Header `Location: /posts/{id}`.
 
@@ -48,7 +125,7 @@ Header `Location: /posts/{id}`.
 The body is the domain `Post` model (`app/domain/models.py`). `content` is returned
 already stripped. `created_at` is set by the server in UTC, ISO 8601.
 
-## Errors
+### Errors
 
 All errors use one shape:
 
@@ -67,7 +144,7 @@ All errors use one shape:
 For `validation_error`, `message` names the offending field(s). For example:
 `"author_id: field required"`.
 
-## Examples
+### Examples
 
 | Request body                                  | Response                    |
 |-----------------------------------------------|-----------------------------|
