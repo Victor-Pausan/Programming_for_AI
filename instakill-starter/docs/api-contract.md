@@ -3,7 +3,8 @@
 | Endpoint        | Status          | Since  |
 |-----------------|-----------------|--------|
 | `GET /health`   | implemented     | Week 1 |
-| `GET /search`   | **implemented** | Week 3 |
+| `GET /search`   | implemented     | Week 3 |
+| `GET /feed`     | **implemented** | Week 4 |
 | `POST /posts`   | planned only    | Week 2 |
 
 All errors share one JSON shape (implemented in `app/api/errors.py`):
@@ -11,6 +12,74 @@ All errors share one JSON shape (implemented in `app/api/errors.py`):
 ```json
 { "error": { "code": "validation_error", "message": "limit: Input should be less than or equal to 20" } }
 ```
+
+## `GET /feed` (implemented)
+
+Returns the personalised feed of one user. Layers: `app/api/feed.py` → `app/services/feed.py` →
+`app/feed/ranking.py` (pure `rank_feed`), with `app/db/repository.py` (`SqliteFeedRepository`) for reads.
+
+### Request
+
+```http
+GET /feed?user_id=1&limit=20&strategy=for_you
+```
+
+| Parameter  | Type    | Required | Rules                                                     |
+|------------|---------|----------|-----------------------------------------------------------|
+| `user_id`  | integer | yes      | Must be an existing user (otherwise `404`).               |
+| `limit`    | integer | no       | 1–50 inclusive; default `20`.                             |
+| `strategy` | string  | no       | `for_you` (default) or `chronological`.                   |
+
+**Candidates** (both strategies): every post except the user's own posts and the posts the user already
+liked. A user who follows nobody still gets a feed, ranked by freshness and popularity. See the README
+for the formula.
+
+### Successful response — `200 OK`
+
+`for_you`. The posts are seed data; scores and times are only illustrative:
+
+```json
+{
+  "user_id": 1,
+  "strategy": "for_you",
+  "posts": [
+    { "post_id": 8,  "user_id": 3, "content": "cheap dinner spot near campus, ramen under ten euros",
+      "created_at": "2026-11-15T16:00:00Z", "score": 2.253706 },
+    { "post_id": 17, "user_id": 3, "content": "my cat walked on the keyboard and fixed a bug",
+      "created_at": "2026-11-16T02:00:00Z", "score": 2.149145 }
+  ]
+}
+```
+
+`chronological` has the same shape, but there is **no** `score` field.
+
+- `posts` holds at most `limit` items, and fewer if there are fewer candidates. It is `[]` when nothing qualifies.
+- `user_id` inside a post is the **author**. The top-level `user_id` is the requesting user.
+- `created_at` is ISO 8601 in UTC.
+- `score` (only for `for_you`) is `1.0·freshness + 1.5·affinity + 1.0·popularity`. It is in [0, 3.5] and
+  rounded to 6 decimals.
+- Ordering: `for_you` by `score` descending; `chronological` by `created_at` descending (newest first).
+  In both, equal values are ordered by ascending `post_id`.
+
+### Errors
+
+| Status | `code`             | When                                                                            |
+|--------|--------------------|---------------------------------------------------------------------------------|
+| 404    | `user_not_found`   | No user has id `user_id`.                                                       |
+| 422    | `validation_error` | `user_id` is missing or not an integer; `limit` is not an integer or is outside 1–50; `strategy` is not `for_you`/`chronological`. |
+| 500    | `internal_error`   | Unexpected failure. This status is not yet mapped by a dedicated handler.       |
+
+### Examples
+
+| Request                                     | Response                |
+|---------------------------------------------|-------------------------|
+| `/feed?user_id=1`                           | `200`, up to 20 posts with `score` |
+| `/feed?user_id=1&strategy=chronological`    | `200`, newest first, no `score`    |
+| `/feed?user_id=8&limit=5`                   | `200`, cold-start feed  |
+| `/feed?user_id=999`                         | `404 user_not_found`    |
+| `/feed`                                     | `422 validation_error`  |
+| `/feed?user_id=1&limit=51`                  | `422 validation_error`  |
+| `/feed?user_id=1&strategy=random`           | `422 validation_error`  |
 
 ## `GET /search` (implemented)
 

@@ -69,6 +69,76 @@ Because the retrieval code is pure and only receives vectors, none of this touch
 Tests use a fake bag-of-words encoder and an in-memory repository (`tests/fakes.py`), so `pytest`
 needs neither the model nor network access.
 
+## Feed (`GET /feed`, Week 4)
+
+```bash
+python scripts/seed_db.py      # resets users/posts/follows/likes to a known state
+uvicorn app.main:app --reload
+curl "localhost:8000/feed?user_id=1&limit=5"
+curl "localhost:8000/feed?user_id=1&strategy=chronological"
+pytest                         # one command: ranking unit tests + API test over the seeded DB
+```
+
+Contract: [`docs/api-contract.md`](docs/api-contract.md).
+
+| Layer | Module | Responsibility |
+|---|---|---|
+| HTTP edge | `app/api/feed.py` | Parse `user_id` / `limit` / `strategy`, map errors (404, 422), format JSON |
+| Use case | `app/services/feed.py` | `get_feed`: validates the request, loads candidates + signals, chooses the strategy |
+| Pure ranking | `app/feed/ranking.py` | `rank_feed(candidates, signals, now, weights, limit)` and `chronological`, heap-based top-k. No I/O, no clock, no mutation |
+| Repository | `app/db/repository.py` | `SqliteFeedRepository`: candidate posts, follows, likes per author, like counts |
+| Data | `app/db/database.py`, `scripts/seed_db.py` | `follow` and `"like"` tables. The seed has 8 users, 20 posts, 15 follows and 26 likes |
+
+`now` comes from `app.state.clock`, which is injected in `create_app()`. It is the only clock read, and it
+happens at the API edge.
+
+### Candidates and cold start
+
+- **Candidates** are all posts except the requesting user's own posts and the posts they already liked.
+- Followed authors are **not** a hard filter. Following an author only raises the affinity signal. With a
+  small network, a "followed authors only" feed would often be empty.
+- **Cold start:** a user who follows nobody and liked nothing (seeded user 8, `heidi`) has affinity 0 for
+  every post. Their feed is therefore ranked by freshness + popularity, i.e. "what is new and liked
+  right now". It is never empty while other people's posts exist.
+
+### Signals and default weights
+
+```text
+score      = 1.0 * freshness + 1.5 * affinity + 1.0 * popularity         (each signal in [0, 1])
+freshness  = 0.5 ** (age_hours / 24)                                     half-life 24 h
+affinity   = 0.6 * [user follows the author] + 0.4 * likes_by_user_on_author / max_likes_by_user_on_any_author
+popularity = log1p(likes of the post) / log1p(max likes among the candidates)
+```
+
+Why these weights (they are our own, not the Week 2 lab ranker):
+
+- **Affinity 1.5:** in the Lab 4 ablation, genre affinity barely mattered. Genres were too coarse
+  (failure case 3: almost every movie is a "Drama"). On InstaKill, affinity is built from **explicit**
+  actions instead: a follow, or repeated likes of the same author. This is much stronger evidence, so it
+  gets the largest weight. A followed author's fresh post should beat a stranger's popular one.
+- **Popularity 1.0, with `log1p`:** the lab showed popularity is the strongest generic signal
+  (NDCG 0.19 -> 0.03 without it). We keep it at full weight. `log1p` stops one viral post from
+  crushing everything, because 10 likes vs 100 likes is a smaller gap than the raw counts suggest.
+- **Freshness 1.0, half-life 24 h:** social posts age in hours, not years (the lab used 180 days for
+  movies). After a day a post keeps half its freshness. After three days it keeps 1/8.
+
+These are reasoned defaults, not tuned values. Formal evaluation against `chronological` comes in Week 7.
+
+### Complexity of one `GET /feed` request
+
+With *C* = candidate posts, *k* = `limit`:
+
+- Repository: the candidate query scans the posts and checks likes through the primary key, so it is
+  O(C). The like counts for the candidates are one grouped query, also O(C).
+- Scoring: O(1) per candidate, so O(C) in total.
+- Top-k with `heapq.nsmallest`: O(C log k). `chronological` is also O(C log k).
+- **Total: O(C log k)** time and O(C) memory, because the candidates are materialised.
+
+**Precompute first:** like counts per post (popularity). Today the counts are aggregated over the `like`
+table on every request. A `like_count` column, or a counter updated when a like is written, would make
+popularity an O(1) lookup. The next step is limiting *C* itself, e.g. only posts from the last N days,
+or a cached candidate set per user.
+
 ## Milestones (see masterplan.md for full details)
 
 W1 Repo+API → W3 CRUD+DB → W4 Feed v0 → W7 Baseline+eval plan → W9 ML+pretrained feature → W11 Profile+optimize → W13 Feature freeze+E2E → W14 Red-team+Demo Day.

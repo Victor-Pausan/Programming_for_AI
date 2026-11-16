@@ -1,0 +1,4 @@
+# Course datasets and downloaded archives: never commit
+ml-latest-small/
+lab-04-build-the-feed/ml-latest-small/
+*.zip
